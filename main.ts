@@ -1,43 +1,80 @@
 import { Page, BrowserContext, Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod";
-import chalk from "chalk";
+import chalk, { colorNames } from "chalk";
 import dotenv from "dotenv";
 import { actWithCache, drawObserveOverlay, clearOverlays } from "./utils.js";
+import StagehandConfig from "./stagehand.config.js";
 
 dotenv.config();
+
 
 interface UserPreferences {
   lowPrice?: boolean;
   fastDelivery?: boolean;
 }
 
-interface VendorResult {
-  name : string;
-  price: string;
-  unitOfMeasure: string;
-  availability: string;
-  deliveryTime?: string;
-  dateChecked: string;
-}
-
-const vendorWebsites = [
-  { name: 'McKesson', url: 'https://www.labsource.com/' },
-  // https://www.vitalitymedical.com/
-  // https://mms.mckesson.com/shop-products
-  // https://mfimedical.com/
-  // https://tigermedical.com/
-  // https://wilburnmedicalusa.com/
-  // https://www.amtouch.com/     fail unexpected page 
-  // https://www.labsource.com/   fail unexpected page
-  // https://www.henryschein.com/us-en/medical/default.aspx?did=medical&stay=1    fail next page
-];
 const productNames = ['gloves', 'Respiratory'];
 const productID = [];
 const productDescription = [{ color: 'red', size: 'medium' }];
 const unitOfMeasure = 'box';
 const userPreference: UserPreferences = { lowPrice: true, fastDelivery: false };
-let nextStatus;
+
 let products;
+const maxAttempts = 2;
+
+
+const vendorWebsitesFeature = [
+  {
+    url : 'https://www.vitalitymedical.com/',             //succeed   
+    unexpectedPage : '',
+    searchBtn : '',
+    nextBtn : 'action  next relative inline-flex items-center text-sm font-medium leading-5 bg-white transition duration-150 ease-in-out hover:text-primary focus:z-10 focus:text-primary rounded-r-md px-3 py-2 text-gray-500',
+  },
+  {
+    url : 'https://mms.mckesson.com/shop-products',       // succeed , note : no nextBtn
+    unexpectedPage : '',
+    searchBtn : 'search',
+    nextBtn : '',
+  },
+  {
+    url : 'https://mfimedical.com/',                      // succeed
+    unexpectedPage : '',
+    searchBtn : '',
+    nextBtn : '',
+  },
+  {
+    url : 'https://tigermedical.com/',                    // succeed in gpt-4o-mini
+    unexpectedPage : '',
+    searchBtn : '',
+    nextBtn : 'click element matching selector a:has-text("Next") or a:has-text("next")',
+  },
+  {
+    url : 'https://wilburnmedicalusa.com/',              //succeed
+    unexpectedPage : '',
+    searchBtn : '',
+    nextBtn : '',
+  },
+  {
+    url : 'https://www.amtouch.com/',
+    unexpectedPage : '',
+    searchBtn : '',
+    nextBtn : 'click element matching selector a:has-text("Next") or a:has-text("next")',
+  },
+  {
+    url : 'https://www.labsource.com/',                      //succeed
+    unexpectedPage : '_close',
+    searchBtn : '',
+    nextBtn : 'click element matching selector a:has-text("»")',
+  },
+  {
+    url : 'https://www.henryschein.com/us-en/medical/default.aspx?did=medical&stay=1',     //succeed
+    unexpectedPage : '',
+    searchBtn : '',
+    nextBtn : 'hs-paging-next',
+  },
+];
+
+
 export async function main({
   page,
   context,
@@ -47,86 +84,69 @@ export async function main({
   context: BrowserContext;
   stagehand: Stagehand;
 }) {
-  const result = [];
-  const today = new Date().toISOString();
 
+  const totalProducts = [];
   // Loop through vendor websites
-  for (const vendor of vendorWebsites) {
-    await page.goto(vendor.url, { timeout: 60000, waitUntil: 'load' });
+  for(const vendorWebFeature of vendorWebsitesFeature){
+  // const vendorWebFeature = vendorWebsitesFeature[6];
+    try{
+       await page.goto(vendorWebFeature.url, { timeout: 60000, waitUntil: 'load' });
+    }catch(e){
+      console.log(e);
+    }
+    await page.setViewportSize({width : 1800, height : 800});
+    let attempt = 0 , searchStatus;
+    while(attempt < maxAttempts){
+      try{
 
-      let status;
-      let attempt = 0;
-      const maxAttempts = 5;
-      var searchStatus;
-      while(attempt < maxAttempts){
-        try{
-          // const adElement = await page.act({
-          //   action: "find advertisement popup element that appears unexpectedly and press keyboard enter",
-          //   useVision: true,
-          // });
-          // console.log("Unexpected advertisement detected:", adElement);
-          await page.setViewportSize({width : 1800, height : 800});
-          
-            searchStatus = await page.act({ 
-              action : `find search input field`,
-            });
-            if(searchStatus.success){
-              const typeProductName = await page.act({
-                action :  `type '${productNames[0]}' in search input field and press keyboard enter`,
-              });
-            }
-          console.log(searchStatus);
-          // if(!searchStatus.success){
-          //     await page.click("[class*='search']");
-          //     searchStatus = await page.act({
-          //       action: `type '${productNames[0]}' search input field and press keyboard enter`
-          //     });
-          //     console.log(searchStatus);
-          // }
-          
-          if(searchStatus.success)
-            break;
-          else throw new Error('This is search error');
-          
-        } catch(error){
-          console.error("Search action failed (possibly due to an ad):", error);
-          try {
-            await page.act({
-              action: `press keyboard enter section:has-text("product")`,
-              useVision: true,
-            });
-            await page.waitForTimeout(1000);
-          } catch (dismissError) {
-            console.error("Could not dismiss advertisement:", dismissError);
-          }
+        if(vendorWebFeature.unexpectedPage){
+          const clickCloseBtn = await page.click(`[class='${vendorWebFeature.unexpectedPage}']`);
+          console.log('Result of the upexpected page : ',clickCloseBtn);
         }
-        attempt++;
+
+        if(vendorWebFeature.searchBtn){
+
+          await page.click(`[class*='${vendorWebFeature.searchBtn}']`);
+          const searchBtnClick = await page.act({
+            action : `type '${productNames[0]}' search input field and press keyboard enter `
+          })
+          console.log('searchBtn : ' , searchBtnClick);
+          break;
+
+        }else{
+          searchStatus = await page.act({
+            action : `find search input field and type '${productNames[0]}' and press keyboard enter`,
+          })
+
+          console.log(searchStatus);
+          if(searchStatus.success) break;
+          else throw new Error(`Can't Find Search Input Field`);
+
+        }
+      }catch(error){
+
+        console.log(error);
+        // try{
+        //   const clickCloseBtn = await page.click(`[class='${vendorWebFeature.unexpectedPage}']`);
+        //   console.log('Result of the upexpected page : ',clickCloseBtn);
+        // }catch(e){
+        //   console.log(e);
+        // }
       }
 
-      console.log(chalk.yellow('Succeed search input field'));
-      // await drawObserveOverlay(page, searchResults);
-      // await page.waitForTimeout(1000);
-      // await clearOverlays(page);
-      
-      // await page.act(searchResults[0]);
-    // }
-    // Optionally handle further interactions if needed
-    // await actWithCache(page, "press keyboard enter to use AI");
-    await page.waitForTimeout(2000);
-    // const findProducts = await page.observe({
-    //   instruction: 'find all products within element matching selector section:has-text("product")',
-    // });
-    // console.log(findProducts);
-    // await drawObserveOverlay(page, findProducts);
-    //   await page.waitForTimeout(1000);
-    //   await clearOverlays(page);
-    do {
-      const findProducts = await page.observe({
-        instruction: 'find all products within element matching selector section:has-text("product")',
-      });
-      console.log(findProducts);
+      attempt++;
+    }
+
+    console.log(chalk.yellow('Search Input Field : succeed'));
+    await page.waitForTimeout(1000);
+
+    var  nextStatus  , products;
+
+    do{
+      var nextpage = 0;
+
       products = await page.extract({
-        instruction : `Extract product listings. For each product, capture the name, price (only numeric value, e.g., $15.99), availability, unit of measure, and delivery time `,
+        instruction : `Extract all products within element matching selector section:has-text("product"). For each product, capture the name, price (only numeric value, e.g., $15.99), availability, unit of measure, and delivery time `,
         schema: z.object({
           list_of_apartments: z.array(
             z.object({
@@ -139,44 +159,35 @@ export async function main({
           ),
         }),
       })
-      console.log(chalk.cyan('Succeed All Product'));
+
+      console.log(chalk.cyan('Get Products : succeed'));
       await page.waitForTimeout(1000);
-      nextStatus = await page.act({
-        action: 'click element matching selector a:has-text("Next") or a:has-text("next")',
-      });
+      try{
+        console.log(vendorWebFeature.nextBtn.indexOf("click"));
+        if(vendorWebFeature.nextBtn.indexOf("click") == -1) throw new Error('Skip');
+        nextStatus = await page.act({
+          action: `${vendorWebFeature.nextBtn}`,
+       });
+       if(!nextStatus.success) throw new Error('failed to click next button');
 
-      // if(!nextStatus.success){
-      //   await page.click("[class*='next']");
-      //   nextStatus = await page.act({
-      //     action: 'press keyboard enter',
-      //   });
-      // }
-      console.log(nextStatus);
-      result.push(products.list_of_apartments);
+      }catch(e){
+        console.log(e);
+        try{
+          await page.click(`[class = '${vendorWebFeature.nextBtn}']`);
+          nextpage = 1;
 
-    }while(nextStatus.success);
-
-    // products.list_of_apartments = products.list_of_apartments.filter(item => item.name == productNames[0]);
-    // products.list_of_apartments = products.list_of_apartments.filter(item => item.unitOfMeasure === unitOfMeasure);
+        }catch(error){
+          console.log(error);
+          break;
+        }
+      }
+      console.log('Go to the next page : ' , nextStatus);
+      totalProducts.push(products.list_of_apartments);
+      if(nextStatus?.success) nextpage = 1;
+      await page.waitForTimeout(1000);
+    }while(nextpage)
   }
-  // if (result.length > 0) {
-  //   if (userPreference.lowPrice) {
-  //     result.sort((a, b) => {
-  //       const priceA = parseFloat(a.price.replace(/[^0-9.]/g, ""));
-  //       const priceB = parseFloat(b.price.replace(/[^0-9.]/g, ""));
-  //       return priceA - priceB;
-  //     });
-  //   }
-  //   if(userPreference.fastDelivery){
-  //     products.list_of_apartments.sort((a, b) => {
-  //       const daysA = a.deliveryTime ? parseInt(a.deliveryTime) : Infinity;
-  //       const daysB = b.deliveryTime ? parseInt(b.deliveryTime) : Infinity;
-  //       return daysA - daysB;
-  //     });
-  //   }
-  // }
-  console.log(chalk.yellow("vendor websites:"));
-  console.log("list of vendor websites is : ", vendorWebsites);
-  console.log(chalk.green("Vendor Comparison Results:"));
-  console.log("products data is : ", result);
+
+  console.log(chalk.green('Vendor Results :'));
+  console.log('Data of Produts is : ' , totalProducts);
 }
